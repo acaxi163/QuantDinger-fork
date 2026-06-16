@@ -603,14 +603,26 @@ class TradingExecutor:
             }
 
         tc = trading_config or {}
+        bp = tc.get("bot_params") or {}  # bot-type params nested by frontend wizard
         return {
             # Flat trading_config stores percent numbers: 100 means 100%.
             "entry_ratio": self._to_ratio(tc.get("entry_pct"), default=100.0),
             "stop_loss_ratio": self._to_ratio(tc.get("stop_loss_pct")),
             "take_profit_ratio": self._to_ratio(tc.get("take_profit_pct")),
-            "trailing_enabled": bool(tc.get("trailing_enabled")),
-            "trailing_stop_ratio": self._to_ratio(tc.get("trailing_stop_pct")),
-            "trailing_activation_ratio": self._to_ratio(tc.get("trailing_activation_pct")),
+            # Trailing TP: prefer root-level keys (indicator strategies), fall
+            # back to bot_params camelCase keys (trend bot wizard).
+            "trailing_enabled": bool(
+                tc.get("trailing_enabled")
+                or bp.get("trailingTpEnabled")
+            ),
+            "trailing_stop_ratio": self._to_ratio(
+                tc.get("trailing_stop_pct")
+                or bp.get("trailingTpCallbackPct")
+            ),
+            "trailing_activation_ratio": self._to_ratio(
+                tc.get("trailing_activation_pct")
+                or bp.get("trailingTpActivationPct")
+            ),
         }
 
     def _build_cfg_from_trading_config(self, trading_config: Dict[str, Any]) -> Dict[str, Any]:
@@ -641,11 +653,21 @@ class TradingExecutor:
                 else StrategyConfigParser.normalize_entry_ratio(None)
             )
         else:
+            bp = tc.get("bot_params") or {}
             stop_loss_pct = self._to_ratio(tc.get("stop_loss_pct"))
             take_profit_pct = self._to_ratio(tc.get("take_profit_pct"))
-            trailing_enabled = bool(tc.get("trailing_enabled"))
-            trailing_stop_pct = self._to_ratio(tc.get("trailing_stop_pct"))
-            trailing_activation_pct = self._to_ratio(tc.get("trailing_activation_pct"))
+            trailing_enabled = bool(
+                tc.get("trailing_enabled")
+                or bp.get("trailingTpEnabled")
+            )
+            trailing_stop_pct = self._to_ratio(
+                tc.get("trailing_stop_pct")
+                or bp.get("trailingTpCallbackPct")
+            )
+            trailing_activation_pct = self._to_ratio(
+                tc.get("trailing_activation_pct")
+                or bp.get("trailingTpActivationPct")
+            )
             entry_pct = self._to_ratio(tc.get("entry_pct"), default=100.0)
 
         # Scale-in
@@ -4871,6 +4893,26 @@ class TradingExecutor:
                 return True
 
             _err = (order_result or {}).get("error", "unknown")
+            _err_str = str(_err).lower()
+
+            # Ghost position sync: if exchange reports "no position" for a close
+            # signal, clear the stale local position to prevent infinite retry loop.
+            if 'close' in sig and any(phrase in _err_str for phrase in [
+                'no position', 'position not found', 'nothing to close',
+                '22002', 'position does not exist', 'no open position'
+            ]):
+                pos_side = 'short' if 'short' in sig else 'long'
+                logger.warning(
+                    f"Exchange reports no position for {signal_type} {symbol}, "
+                    f"clearing stale local position (ghost position sync)"
+                )
+                self._close_position(strategy_id, symbol, pos_side)
+                append_strategy_log(
+                    strategy_id, "warning",
+                    f"Ghost position cleared: exchange has no {pos_side} position for {symbol}"
+                )
+                return True  # Target state achieved (no position), treat as success
+
             append_strategy_log(strategy_id, "error", f"Order enqueue failed: {signal_type} {symbol}, error={_err}")
             return False
             
