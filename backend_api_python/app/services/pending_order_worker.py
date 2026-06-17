@@ -2088,12 +2088,18 @@ class PendingOrderWorker:
                 else:
                     # Ghost position sync: if exchange reports "no position" for a close
                     # signal, clear the stale local position to prevent infinite retry loop.
+                    # Signal types that close/reduce a position: close_long, close_short,
+                    # reduce_long, reduce_short, close_long_stop, close_short_trailing, etc.
                     _err_lower = str(friendly_error).lower()
-                    if 'close' in signal_type.lower() and any(phrase in _err_lower for phrase in [
+                    _sig_lower = signal_type.lower()
+                    _is_close_signal = any(kw in _sig_lower for kw in [
+                        'close', 'reduce',
+                    ])
+                    if _is_close_signal and any(phrase in _err_lower for phrase in [
                         'no position', 'position not found', 'nothing to close',
                         '22002', 'position does not exist', 'no open position'
                     ]):
-                        pos_side = 'short' if 'short' in signal_type.lower() else 'long'
+                        pos_side = 'short' if 'short' in _sig_lower else 'long'
                         logger.warning(
                             f"Exchange reports no position for {signal_type} {symbol}, "
                             f"clearing stale local position (ghost position sync)"
