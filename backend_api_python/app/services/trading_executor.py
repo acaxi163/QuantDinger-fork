@@ -3473,11 +3473,13 @@ class TradingExecutor:
             trailing_act_eff = trailing_act if trailing_act > 0 else 0.0
             trailing_fee_rate = self._effective_taker_fee_rate(strategy_id, trading_config)
 
-            # Conflict rule: when trailing is enabled, fixed TP is disabled.
+            # Design: Fixed TP and trailing TP can coexist.
+            # - Fixed TP acts as a hard ceiling (absolute profit target)
+            # - Trailing TP tracks peak profit after activation, exits on drawdown
+            # - If trailing activation not set but fixed TP exists, use fixed TP as activation
             if trailing_enabled and trailing_pct_eff > 0:
-                tp_eff = 0.0
                 if trailing_act_eff <= 0 and tp > 0:
-                    trailing_act_eff = tp
+                    trailing_act_eff = tp  # Use fixed TP as trailing activation default
 
             now_ts = int(time.time())
             tf = int(timeframe_seconds or 60)

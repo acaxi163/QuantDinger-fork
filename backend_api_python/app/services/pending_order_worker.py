@@ -2086,6 +2086,46 @@ class PendingOrderWorker:
                     remaining = 0.0
                     append_strategy_log(strategy_id, "error", f"Exchange market order partially failed ({symbol} {signal_type}): {friendly_error} (partial filled={fills.total_base})")
                 else:
+                    # Ghost position sync: if exchange reports "no position" for a close
+                    # signal, clear the stale local position to prevent infinite retry loop.
+                    _err_lower = str(friendly_error).lower()
+                    if 'close' in signal_type.lower() and any(phrase in _err_lower for phrase in [
+                        'no position', 'position not found', 'nothing to close',
+                        '22002', 'position does not exist', 'no open position'
+                    ]):
+                        pos_side = 'short' if 'short' in signal_type.lower() else 'long'
+                        logger.warning(
+                            f"Exchange reports no position for {signal_type} {symbol}, "
+                            f"clearing stale local position (ghost position sync)"
+                        )
+                        # Clear local position record
+                        try:
+                            with get_db_connection() as db:
+                                cur = db.cursor()
+                                cur.execute(
+                                    """DELETE FROM qd_strategy_positions
+                                       WHERE strategy_id = %s AND symbol = %s AND side = %s""",
+                                    (int(strategy_id), str(symbol), pos_side)
+                                )
+                                db.commit()
+                                cur.close()
+                        except Exception as sync_err:
+                            logger.warning(f"Failed to clear ghost position: {sync_err}")
+                        append_strategy_log(
+                            strategy_id, "warning",
+                            f"Ghost position cleared: exchange has no {pos_side} position for {symbol}"
+                        )
+                        # Mark order as sent (target state achieved: no position)
+                        self._mark_sent(
+                            order_id=order_id,
+                            note="ghost_position_cleared",
+                            exchange_id=exchange_id,
+                            filled=0.0,
+                            avg_price=0.0,
+                            executed_at=1,  # Mark as executed
+                        )
+                        return
+
                     self._mark_failed(order_id=order_id, error=friendly_error)
                     _console_print(f"[worker] order failed: strategy_id={strategy_id} pending_id={order_id} err={friendly_error}")
                     _notify_live_best_effort(status="failed", error=friendly_error, amount_hint=amount, price_hint=ref_price)
